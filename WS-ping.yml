@@ -1,7 +1,8 @@
 ---
 - name: Test Windows Connectivity
-  hosts: all
+  hosts: all  # or your Windows group
   gather_facts: false
+  become: false  # Add this line to disable become/sudo
   tasks:
     - name: Ping Windows hosts
       win_ping:
