@@ -1,5 +1,7 @@
-- name: Ping Windows Server
+---
+- name: Test Windows Connectivity
   hosts: all
+  gather_facts: false
   tasks:
-    - name: Test connectivity
+    - name: Ping Windows hosts
       win_ping:
