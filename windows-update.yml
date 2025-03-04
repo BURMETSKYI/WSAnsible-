@@ -22,7 +22,7 @@
       when: result.reboot_required
 
     - name: Install Firefox
-      win_chocolatey:
+      community.windows.win_chocolatey:
         name: firefox
         state: present
 
