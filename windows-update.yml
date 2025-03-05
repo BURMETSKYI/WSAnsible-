@@ -1,29 +1,92 @@
 ---
-# Ansible playbook to run Windows Update and restart, if required
-#
-# http://docs.ansible.com/ansible/win_updates_module.html
-# https://docs.ansible.com/ansible/win_reboot_module.html
-
-- name:  Windows Update
+# Check diskspace
+- name: check free disk space
   hosts: all
-  gather_facts: false
   tasks:
-    - name: Running Windows Update
+    - name: "Check free space in C:"
+      win_shell: "write-host ([math]::Round((Get-PSDrive C | Select-Object Free).free / 1024 / 1024 / 1024,2))"
+      register: freespace
+ 
+    - name: report free disk space
+      debug:
+        msg: |
+          "{{ freespace.stdout }} GB"
+ 
+    - name: fail if there is not enough space
+      fail:
+        msg: "VM {{ inventory_hostname }} has not enough space"
+      when: freespace.stdout | int < 20
+
+# Check updates
+- name: windows server patching
+  hosts: all
+  tasks:
+    - name: Check for missing updates
       win_updates:
-        category_names: ['SecurityUpdates','CriticalUpdates','UpdateRollups', 'Updates', 'DefinitionUpdates']
-        #category_names: ['SecurityUpdates']
-      register: result
+        state: searched
+      register: update_results
 
-    # output results
-    - debug: var=result
+    - name: report update results
+      debug:
+        msg: |
+          {% for k in update_results.updates %}
+          {{ update_results.updates[k].title }}
+          {% endfor %}
 
-    # reboot only if required
-    - win_reboot:
-      when: result.reboot_required
+# Windows Update All
+- name: Install all updates and reboot as many times as needed
+  hosts: all
+  tasks:
+    - name: Create Directory
+      ansible.windows.win_file:
+        path: c:\temp
+        state: directory
 
-    - name: Install Firefox
-      community.windows.win_chocolatey:
-        name: firefox
-        state: present
+    - name: Start Windows Patching
+      ansible.windows.win_updates:
+        category_names: "*"
+        reboot: no
+        log_path: c:\temp\patching.txt
+      register: update_result
+      until: update_result.found_update_count == 0
 
-    
+# Check reboot
+- name: Examine various registry locations identify a pending reboot
+  win_shell: |
+
+    $results = @{'needs_reboot'=$false ; 'reason'=@()}
+    $regpath = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending"
+    if (Get-ChildItem -Path $regpath -ErrorAction Ignore) {
+      $results['needs_reboot']=$true
+      $results['reason']+='Component Based Servicing'
+    }
+    $regpath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired"
+    if (Get-Item -Path $regpath -ErrorAction Ignore) {
+      $results['needs_reboot']=$true
+      $results['reason']+='WindowsUpdate'
+    }
+    # $regpath = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager"
+    # if (Get-ItemProperty -Path $regpath -Name PendingFileRenameOperations -ErrorAction Ignore) {
+    #   $results['needs_reboot']=$true
+    #   $results['reason']+='PendingFileRenameOperations'
+    # }
+    try {
+      $util = [wmiclass]"\\.\root\ccm\clientsdk:CCM_ClientUtilities"
+      $status = $util.DetermineIfRebootPending()
+      if(($status -ne $null) -and $status.RebootPending){
+        $results['needs_reboot']=$true
+        $results['reason']+='CCM_RebootPending'
+      }
+    } catch{}
+
+    return $results | ConvertTo-Json
+  register: needs_reboot
+
+- name: set needs_reboot for other roles/plays
+  set_fact:
+    needs_reboot: "{{ needs_reboot.stdout.needs_reboot|default(false) }}"
+
+- name: debug output
+  debug:
+    var: needs_reboot
+          
